@@ -1,0 +1,5 @@
+[install]
+# Windows: bun's default "hardlink" backend silently produced ~75 empty package
+# directories in node_modules (debug, ms, chalk, zod, ...), which broke the Expo
+# CLI with "Cannot find module 'debug'". copyfile is slower but correct.
+backend = "copyfile"

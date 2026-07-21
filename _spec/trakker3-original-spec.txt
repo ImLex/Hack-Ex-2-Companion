@@ -1,0 +1,905 @@
+TRAKKER 3 - COMPLETE PROJECT SUMMARY
+====================================
+
+PROJECT GOAL
+------------
+
+Trakker 3 is a local Android application inspired by Hack Ex / Hack Ex 2.
+
+It is NOT a hacking tool.
+
+It is a tracker/database for keeping information about discovered targets in-game.
+
+The goal is to replace spreadsheets and notebooks with a polished intelligence database that can:
+
+• Store targets
+• Track logs
+• Parse logs
+• Track wallets
+• Track IP addresses
+• Track installed software
+• Track crypto history
+• Rank targets automatically
+• Search everything instantly
+• Analyze target value
+• Become a complete offline intelligence system
+
+
+==========================================================
+GENERAL DESIGN PHILOSOPHY
+==========================================================
+
+The application should be designed with future expansion in mind.
+
+Avoid temporary solutions.
+
+Before adding features:
+
+• Think about how future features connect.
+• Prevent breaking existing systems.
+• Avoid duplicated data.
+• Keep database structure clean.
+• Keep relationships normalized.
+• Store information where it belongs.
+• Make everything searchable.
+• Prefer scalable systems over quick fixes.
+
+
+Development style:
+
+The user prefers:
+
+❌ Small fixes repeatedly
+❌ Rewriting the same files
+❌ Temporary patches
+
+Instead:
+
+✅ Complete one file at a time
+✅ Think ahead before coding
+✅ Build systems properly once
+✅ Use copy/paste ready complete files
+✅ Minimize future breaking changes
+
+
+==========================================================
+DATABASE STRUCTURE
+==========================================================
+
+
+TargetEntity
+------------
+
+Represents the target identity.
+
+Should remain mostly static.
+
+Fields:
+
+id
+name
+device
+dateAdded
+attackCount
+
+
+Purpose:
+
+Stores who/what the target is.
+
+Does NOT store constantly changing information.
+
+
+----------------------------------------------------------
+
+
+TargetInfoEntity
+----------------
+
+Dynamic target intelligence.
+
+Fields:
+
+targetId
+level
+crypto
+cryptoExtractedTotal
+cryptoExtractedToday
+activity
+potentialScore
+tags
+notes
+lastUpdated
+
+
+Purpose:
+
+Stores information that changes over time.
+
+Examples:
+
+Level changes.
+Crypto changes.
+Activity changes.
+Score changes.
+
+
+----------------------------------------------------------
+
+
+IpRelationEntity
+----------------
+
+Stores discovered IP addresses.
+
+Fields:
+
+id
+targetId
+address
+status
+foundFromLogId
+source
+discoveredAt
+
+
+Purpose:
+
+Every discovered IP belongs to one target.
+
+
+----------------------------------------------------------
+
+
+WalletEntity
+------------
+
+Stores discovered wallets.
+
+Fields:
+
+id
+targetId
+displayAddress
+fullAddress
+cracked
+foundFromLogId
+
+
+Purpose:
+
+Tracks wallet discovery and cracking status.
+
+
+----------------------------------------------------------
+
+
+LogEntity
+---------
+
+Stores imported raw logs.
+
+Fields:
+
+id
+targetId
+rawLog
+timestamp
+eventType
+cryptoExtracted
+extractedIpCount
+extractedWalletCount
+extractedIps
+extractedWallets
+parserConfidence
+
+
+Purpose:
+
+Every event should be traceable back to the original log.
+
+
+----------------------------------------------------------
+
+
+CryptoHistoryEntity
+-------------------
+
+Stores every crypto extraction event.
+
+Fields:
+
+id
+targetId
+amount
+date
+source
+sourceLogId
+
+
+Purpose:
+
+Never only store totals.
+
+Keep history for:
+
+• Graphs
+• Timeline
+• Daily income
+• Monthly income
+• Statistics
+
+
+----------------------------------------------------------
+
+
+CryptoHistoryWithLog
+--------------------
+
+Relation:
+
+CryptoHistoryEntity
+
++
+
+LogEntity
+
+
+Allows:
+
+Viewing extraction history with the original event.
+
+
+----------------------------------------------------------
+
+
+SoftwareEntity
+--------------
+
+Master software database.
+
+Examples:
+
+Firewall
+
+Proxy
+
+Siphon
+
+Spam
+
+Bypasser
+
+Rootkit
+
+Password Encryptor
+
+Keygen
+
+
+Purpose:
+
+Stores available software types.
+
+
+----------------------------------------------------------
+
+
+InstalledSoftwareEntity
+-----------------------
+
+Stores software installed on targets.
+
+Fields:
+
+id
+targetId
+softwareId
+level
+
+
+Example:
+
+Target A:
+
+Firewall Lv25
+
+Proxy Lv20
+
+Siphon Lv17
+
+
+----------------------------------------------------------
+
+
+ReviewEntity
+------------
+
+Stores targets needing manual review.
+
+
+==========================================================
+RELATION STRUCTURE
+==========================================================
+
+
+TargetWithDetails contains:
+
+
+TargetEntity
+
++
+
+TargetInfoEntity
+
++
+
+List<IpRelationEntity>
+
++
+
+List<WalletEntity>
+
++
+
+List<LogEntity>
+
++
+
+List<CryptoHistoryWithLog>
+
++
+
+List<InstalledSoftwareEntity>
+
+
+Everything should be accessible from one target query.
+
+
+==========================================================
+TARGET PROFILE SCREEN
+==========================================================
+
+
+Current sections:
+
+• Target information
+
+• Target intelligence
+
+• Known IPs
+
+• Installed software
+
+• Logs
+
+• Crypto history
+
+• Delete target
+
+
+Future sections:
+
+• Wallets
+
+• Reviews
+
+• Statistics
+
+• Graphs
+
+• Timeline
+
+• Notes
+
+• Tags
+
+• Potential score
+
+• Risk analysis
+
+
+==========================================================
+SEARCH SYSTEM
+==========================================================
+
+
+Search should eventually support:
+
+
+Targets:
+
+• Name
+• Device
+• Level
+• Tags
+• Activity
+
+
+Network:
+
+• IP addresses
+
+
+Wallets:
+
+• Short address
+• Full address
+
+
+Software:
+
+• Installed software
+• Software levels
+
+
+Logs:
+
+• Raw log contents
+• Events
+
+
+Other:
+
+• Notes
+• Potential score
+• Crypto amount
+
+
+==========================================================
+SOFTWARE TRACKING
+==========================================================
+
+
+Software is normalized.
+
+Do NOT store software directly inside targets.
+
+
+Structure:
+
+
+SoftwareEntity
+
+        |
+
+InstalledSoftwareEntity
+
+        |
+
+TargetEntity
+
+
+
+Example:
+
+
+Target:
+
+Nova3
+
+
+Software:
+
+Firewall Lv25
+
+Proxy Lv20
+
+Spam Lv18
+
+Siphon Lv20
+
+Rootkit Lv16
+
+
+==========================================================
+LOG PARSER SYSTEM
+==========================================================
+
+
+Logs should eventually automatically detect:
+
+
+• IP addresses
+
+• Wallet addresses
+
+• Crypto amounts
+
+• Event type
+
+• Software mentions
+
+• Related entities
+
+• Confidence score
+
+
+Future:
+
+Automatic insertion into:
+
+IP table
+
+Wallet table
+
+Crypto history
+
+Software tracking
+
+
+==========================================================
+CRYPTO SYSTEM
+==========================================================
+
+
+Crypto should be tracked as history.
+
+Never rely only on current amount.
+
+
+Store:
+
+Amount
+
+Date
+
+Source
+
+Related log
+
+
+Allows:
+
+
+• Income graphs
+
+• Target ranking
+
+• Historical analysis
+
+• Daily earnings
+
+
+==========================================================
+TARGET TAG SYSTEM
+==========================================================
+
+
+Tags are used for fast classification.
+
+Current examples:
+
+
+HIGH
+
+SPAMMER
+
+GODLY
+
+
+Future useful tags:
+
+
+LOW
+
+MEDIUM
+
+HIGH
+
+ULTRA
+
+GODLY
+
+SPAMMER
+
+BANK
+
+ACTIVE
+
+SEMI_ACTIVE
+
+INACTIVE
+
+REVIEW
+
+LOW_CRYPTO
+
+HIGH_CRYPTO
+
+SAFE
+
+RISKY
+
+VIP
+
+IMPORTANT
+
+IGNORE
+
+BLACKLIST
+
+FAVORITE
+
+LONG_TERM
+
+SHORT_TERM
+
+SIPHON
+
+MANUAL
+
+ROOTKIT
+
+FIREWALL
+
+PASSWORD
+
+ENCRYPTED
+
+
+Current storage:
+
+Comma-separated text.
+
+
+Future improvement:
+
+Separate TagEntity relation table.
+
+
+==========================================================
+TARGET VALUE TAG SCALING
+==========================================================
+
+
+The tag system should scale from:
+
+Level 0 → Level 30
+
+
+Level 30 reference values:
+
+
+LOW:
+
+250
+
+
+MEDIUM:
+
+500
+
+
+HIGH:
+
+1000
+
+
+ULTRA:
+
+1500
+
+
+GODLY:
+
+2500
+
+
+TARGETTED:
+
+1500+
+
+Fast crypto refill target.
+
+
+10K+:
+
+5000+
+
+
+----------------------------------------------------------
+
+
+Scaling formula:
+
+
+LOW:
+
+level × 8.33
+
+
+MEDIUM:
+
+LOW × 2
+
+
+HIGH:
+
+LOW × 4
+
+
+ULTRA:
+
+LOW × 6
+
+
+GODLY:
+
+LOW × 10
+
+
+
+Example:
+
+
+Level 1:
+
+LOW 8
+
+MEDIUM 16
+
+HIGH 33
+
+ULTRA 50
+
+GODLY 83
+
+
+
+Level 10:
+
+LOW 83
+
+MEDIUM 166
+
+HIGH 333
+
+ULTRA 500
+
+GODLY 833
+
+
+
+Level 20:
+
+LOW 167
+
+MEDIUM 334
+
+HIGH 667
+
+ULTRA 1000
+
+GODLY 1667
+
+
+
+Level 30:
+
+LOW 250
+
+MEDIUM 500
+
+HIGH 1000
+
+ULTRA 1500
+
+GODLY 2500
+
+
+This avoids manually maintaining 30 separate tables.
+
+
+==========================================================
+ACTIVITY STATES
+==========================================================
+
+
+Available states:
+
+
+ACTIVE
+
+SEMI_ACTIVE
+
+INACTIVE
+
+REVIEW
+
+
+==========================================================
+POTENTIAL SCORE
+==========================================================
+
+
+Future calculation should consider:
+
+
+• Current crypto
+
+• Total extracted crypto
+
+• Target level
+
+• Activity
+
+• Installed software
+
+• History
+
+• Tags
+
+• Refill speed
+
+
+==========================================================
+FUTURE FEATURES
+==========================================================
+
+
+Dashboard
+
+Charts
+
+Statistics
+
+Crypto graphs
+
+Activity graphs
+
+Daily income
+
+Target ranking
+
+Advanced search
+
+Filtering
+
+Review system
+
+Automatic parser
+
+Automatic wallet detection
+
+Automatic IP detection
+
+Automatic software detection
+
+Automatic crypto history
+
+Dark Material 3 UI
+
+Offline database
+
+Fast Room queries
+
+Backup/export system
+
+
+==========================================================
+CODING RULES
+==========================================================
+
+
+Architecture priorities:
+
+
+1. Correct database structure.
+
+2. Future-proof relationships.
+
+3. Minimal duplicated data.
+
+4. Complete files.
+
+5. One file at a time.
+
+6. Think before changing.
+
+7. Prevent problems instead of fixing them later.
+
+
+The goal:
+
+Build Trakker 3 once properly instead of constantly repairing broken systems.

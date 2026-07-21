@@ -1,0 +1,44 @@
+{
+  "expo": {
+    "name": "Hack EX 2 Companion",
+    "slug": "hack-ex-2-companion",
+    "version": "1.3.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "trakker3",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0E1116",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.trakker3.app",
+      "entitlements": {
+        "com.apple.security.application-groups": ["group.com.trakker3.app"]
+      }
+    },
+    "android": {
+      "package": "com.trakker3.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#000000",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-sqlite",
+      "expo-font",
+      "expo-localization",
+      "@bacons/apple-targets"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

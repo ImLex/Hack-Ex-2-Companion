@@ -1,0 +1,139 @@
+import ReplayKit
+import Vision
+
+// Receives every frame of the system screen broadcast, OCRs one frame every
+// couple of seconds, and writes the recognised lines as snapshot JSON into the
+// App Group queue that the companion app drains — the iOS counterpart of the
+// Android AccessibilityService. iOS kills broadcast extensions that exceed
+// 50 MB, so frames are processed synchronously, one at a time, inside an
+// autorelease pool.
+class SampleHandler: RPBroadcastSampleHandler {
+
+  private let frameInterval: TimeInterval = 2.0
+  private let heartbeatInterval: TimeInterval = 1.0
+  // While the companion app itself is on screen its own UI must not be OCR'd
+  // back into the database. The app heartbeats this flag every 2 s.
+  private let companionPauseWindow: TimeInterval = 5.0
+  private let maxQueueFiles = 300
+
+  private var lastProcessed: TimeInterval = 0
+  private var lastHeartbeat: TimeInterval = 0
+  private var lastTextHash: Int = 0
+  private var writesSinceTrim = 0
+
+  private lazy var appGroupId: String = Self.resolveAppGroupId()
+  private lazy var sharedDefaults: UserDefaults? = UserDefaults(suiteName: appGroupId)
+  private lazy var queueDir: URL? = {
+    guard
+      let container = FileManager.default.containerURL(
+        forSecurityApplicationGroupIdentifier: appGroupId)
+    else { return nil }
+    let dir = container.appendingPathComponent("gamereader/queue", isDirectory: true)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    return dir
+  }()
+
+  override func processSampleBuffer(
+    _ sampleBuffer: CMSampleBuffer, with sampleBufferType: RPSampleBufferType
+  ) {
+    guard sampleBufferType == .video else { return }
+    let now = Date().timeIntervalSince1970
+
+    if now - lastHeartbeat >= heartbeatInterval {
+      lastHeartbeat = now
+      sharedDefaults?.set(now, forKey: "hx2.lastFrameTs")
+    }
+
+    guard now - lastProcessed >= frameInterval else { return }
+    let companionTs = sharedDefaults?.double(forKey: "hx2.companionForegroundTs") ?? 0
+    guard now - companionTs > companionPauseWindow else { return }
+    guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+    lastProcessed = now
+
+    autoreleasepool {
+      let request = VNRecognizeTextRequest()
+      request.recognitionLevel = .accurate
+      // IPs, hex wallets and handles like "hx84d9...762d" must come through
+      // verbatim; language correction rewrites them into English words.
+      request.usesLanguageCorrection = false
+      request.recognitionLanguages = ["en-US"]
+
+      let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up)
+      try? handler.perform([request])
+      guard let observations = request.results, !observations.isEmpty else { return }
+
+      // Reading order: top-to-bottom in coarse rows, then left-to-right.
+      // Vision's normalized coordinates have their origin at the bottom-left.
+      let lines =
+        observations
+        .map { obs -> (row: Int, x: CGFloat, text: String) in
+          let box = obs.boundingBox
+          let row = Int(((1 - box.midY) * 100).rounded())
+          return (row, box.minX, obs.topCandidates(1).first?.string ?? "")
+        }
+        .filter { !$0.text.isEmpty }
+        .sorted { $0.row != $1.row ? $0.row < $1.row : $0.x < $1.x }
+        .map { $0.text }
+      guard !lines.isEmpty else { return }
+
+      let joined = lines.joined(separator: "\n")
+      guard joined.hashValue != lastTextHash else { return }
+      lastTextHash = joined.hashValue
+
+      writeSnapshot(lines: lines, timestampMs: Int64(now * 1000))
+    }
+  }
+
+  private func writeSnapshot(lines: [String], timestampMs: Int64) {
+    guard let dir = queueDir else { return }
+    let payload: [String: Any] = [
+      "ts": timestampMs,
+      "pkg": "ios.broadcast",
+      "nodes": lines.map { ["text": $0] },
+    ]
+    guard let data = try? JSONSerialization.data(withJSONObject: payload) else { return }
+    try? data.write(to: dir.appendingPathComponent("\(timestampMs).json"), options: .atomic)
+
+    writesSinceTrim += 1
+    if writesSinceTrim >= 50 {
+      writesSinceTrim = 0
+      trimQueue(dir)
+    }
+  }
+
+  // The app normally drains the queue; the cap only matters if it is not
+  // opened for a very long broadcast session.
+  private func trimQueue(_ dir: URL) {
+    guard
+      let files = try? FileManager.default.contentsOfDirectory(
+        at: dir, includingPropertiesForKeys: nil)
+    else { return }
+    let sorted = files.filter { $0.pathExtension == "json" }
+      .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    guard sorted.count > maxQueueFiles else { return }
+    for file in sorted.prefix(sorted.count - maxQueueFiles) {
+      try? FileManager.default.removeItem(at: file)
+    }
+  }
+
+  // Sideloading (Sideloadly, AltStore, Xcode free account) rewrites the app
+  // group to something like "group.TEAMID.com.trakker3.app", so the compiled-in
+  // constant would miss the real container. The re-signed entitlements live in
+  // the embedded provisioning profile; read the actual group from there.
+  static func resolveAppGroupId() -> String {
+    if let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
+      let raw = try? Data(contentsOf: url),
+      let start = raw.range(of: Data("<plist".utf8)),
+      let end = raw.range(of: Data("</plist>".utf8)),
+      let plist = try? PropertyListSerialization.propertyList(
+        from: raw.subdata(in: start.lowerBound..<end.upperBound), options: [], format: nil)
+        as? [String: Any],
+      let entitlements = plist["Entitlements"] as? [String: Any],
+      let groups = entitlements["com.apple.security.application-groups"] as? [String],
+      let first = groups.first
+    {
+      return first
+    }
+    return "group.com.trakker3.app"
+  }
+}
