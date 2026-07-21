@@ -30,6 +30,7 @@ jobs:
         run: bun x expo prebuild -p ios
 
       - name: Build (unsigned)
+        shell: bash
         run: |
           WORKSPACE=$(ls -d ios/*.xcworkspace | head -n1)
           SCHEME=$(basename "$WORKSPACE" .xcworkspace)
@@ -48,14 +49,20 @@ jobs:
             build | xcbeautify --renderer github-actions
 
       - name: Package IPA
+        shell: bash
         run: |
           APP_PATH=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -n1)
           test -n "$APP_PATH" || { echo "No .app produced"; exit 1; }
           echo "Packaging $APP_PATH"
-          ls "$APP_PATH/PlugIns" || echo "WARNING: no PlugIns folder — broadcast extension missing!"
+          APP_NAME=$(basename "$APP_PATH" .app)
+          test -f "$APP_PATH/$APP_NAME" || { echo "App binary missing — build did not complete"; exit 1; }
+          ls "$APP_PATH/PlugIns"/*.appex >/dev/null || { echo "Broadcast extension (.appex) missing from PlugIns"; exit 1; }
           mkdir Payload
           cp -R "$APP_PATH" Payload/
           zip -qry HackEX2Companion-unsigned.ipa Payload
+          SIZE=$(stat -f%z HackEX2Companion-unsigned.ipa)
+          echo "IPA size: $SIZE bytes"
+          test "$SIZE" -gt 5000000 || { echo "IPA suspiciously small — refusing to upload"; exit 1; }
 
       - uses: actions/upload-artifact@v4
         with:

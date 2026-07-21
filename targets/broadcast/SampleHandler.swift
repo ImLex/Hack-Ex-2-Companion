@@ -7,6 +7,12 @@ import Vision
 // Android AccessibilityService. iOS kills broadcast extensions that exceed
 // 50 MB, so frames are processed synchronously, one at a time, inside an
 // autorelease pool.
+private struct OCRLine {
+  let row: Int
+  let x: CGFloat
+  let text: String
+}
+
 class SampleHandler: RPBroadcastSampleHandler {
 
   private let frameInterval: TimeInterval = 2.0
@@ -64,17 +70,21 @@ class SampleHandler: RPBroadcastSampleHandler {
 
       // Reading order: top-to-bottom in coarse rows, then left-to-right.
       // Vision's normalized coordinates have their origin at the bottom-left.
-      let lines =
-        observations
-        .map { obs -> (row: Int, x: CGFloat, text: String) in
-          let box = obs.boundingBox
-          let row = Int(((1 - box.midY) * 100).rounded())
-          return (row, box.minX, obs.topCandidates(1).first?.string ?? "")
-        }
-        .filter { !$0.text.isEmpty }
-        .sorted { $0.row != $1.row ? $0.row < $1.row : $0.x < $1.x }
-        .map { $0.text }
-      guard !lines.isEmpty else { return }
+      var items: [OCRLine] = []
+      items.reserveCapacity(observations.count)
+      for obs in observations {
+        guard let text = obs.topCandidates(1).first?.string, !text.isEmpty else { continue }
+        let box = obs.boundingBox
+        let flippedMidY: CGFloat = 1.0 - box.midY
+        let row = Int((flippedMidY * 100.0).rounded())
+        items.append(OCRLine(row: row, x: box.minX, text: text))
+      }
+      guard !items.isEmpty else { return }
+      items.sort { a, b in
+        if a.row != b.row { return a.row < b.row }
+        return a.x < b.x
+      }
+      let lines = items.map { $0.text }
 
       let joined = lines.joined(separator: "\n")
       guard joined.hashValue != lastTextHash else { return }
