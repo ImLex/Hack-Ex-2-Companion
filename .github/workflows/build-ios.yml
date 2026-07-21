@@ -59,7 +59,9 @@ jobs:
           ls "$APP_PATH/PlugIns"/*.appex >/dev/null || { echo "Broadcast extension (.appex) missing from PlugIns"; exit 1; }
           mkdir Payload
           cp -R "$APP_PATH" Payload/
-          zip -qry HackEX2Companion-unsigned.ipa Payload
+          # No -y: store symlink targets as real files — AltStore rejects
+          # IPAs containing symlink entries as invalid.
+          zip -qr HackEX2Companion-unsigned.ipa Payload
           SIZE=$(stat -f%z HackEX2Companion-unsigned.ipa)
           echo "IPA size: $SIZE bytes"
           test "$SIZE" -gt 5000000 || { echo "IPA suspiciously small — refusing to upload"; exit 1; }
