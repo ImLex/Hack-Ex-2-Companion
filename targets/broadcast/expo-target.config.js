@@ -5,7 +5,7 @@ module.exports = (config) => ({
   displayName: 'HE2 Game Capture',
   bundleIdentifier: '.broadcast',
   deploymentTarget: '15.1',
-  frameworks: ['ReplayKit', 'Vision'],
+  frameworks: ['ReplayKit', 'Vision', 'Accelerate'],
   entitlements: {
     'com.apple.security.application-groups':
       config.ios.entitlements['com.apple.security.application-groups'],

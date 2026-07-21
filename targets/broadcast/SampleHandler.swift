@@ -1,4 +1,4 @@
-import CoreImage
+import Accelerate
 import ReplayKit
 import Vision
 
@@ -28,14 +28,17 @@ class SampleHandler: RPBroadcastSampleHandler {
   private var lastTextHash: Int = 0
   private var writesSinceTrim = 0
 
-  // The extension is hard-capped at 50 MB; OCR at full screen resolution can
-  // blow past that and iOS kills the whole broadcast. Frames are downscaled
-  // into one reused buffer before Vision sees them.
-  private let maxOcrDimension: CGFloat = 1024
-  private lazy var ciContext = CIContext(options: [.cacheIntermediates: false])
-  private var scaledBuffer: CVPixelBuffer?
-  private var scaledWidth = 0
-  private var scaledHeight = 0
+  // The extension is hard-capped at 50 MB; iOS kills the whole broadcast if
+  // we cross it. Frames are reduced to a downscaled grayscale plane via
+  // vImage (no CoreImage/Metal — that context's baseline alone is ~15 MB),
+  // and recognition degrades to .fast / skips frames as footprint climbs.
+  private let maxOcrDimension = 1024
+  private let fastModeFootprintMb = 30.0
+  private let skipFrameFootprintMb = 40.0
+  private var lumaBuffer: CVPixelBuffer?
+  private var lumaWidth = 0
+  private var lumaHeight = 0
+  private var useFastRecognition = false
 
   private lazy var appGroupId: String = Self.resolveAppGroupId()
   private lazy var sharedDefaults: UserDefaults? = UserDefaults(suiteName: appGroupId)
@@ -71,10 +74,15 @@ class SampleHandler: RPBroadcastSampleHandler {
     guard let fullBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
     lastProcessed = now
 
+    let footprintMb = Self.footprintMb()
+    sharedDefaults?.set(footprintMb, forKey: "hx2.memFootprintMb")
+    if footprintMb > fastModeFootprintMb { useFastRecognition = true }
+    if footprintMb > skipFrameFootprintMb { return }
+
     autoreleasepool {
-      guard let pixelBuffer = downscaleIfNeeded(fullBuffer) else { return }
+      guard let pixelBuffer = downscaledLuma(fullBuffer) else { return }
       let request = VNRecognizeTextRequest()
-      request.recognitionLevel = .accurate
+      request.recognitionLevel = useFastRecognition ? .fast : .accurate
       // IPs, hex wallets and handles like "hx84d9...762d" must come through
       // verbatim; language correction rewrites them into English words.
       request.usesLanguageCorrection = false
@@ -110,30 +118,61 @@ class SampleHandler: RPBroadcastSampleHandler {
     }
   }
 
-  private func downscaleIfNeeded(_ source: CVPixelBuffer) -> CVPixelBuffer? {
-    let srcW = CVPixelBufferGetWidth(source)
-    let srcH = CVPixelBufferGetHeight(source)
-    let longest = CGFloat(max(srcW, srcH))
-    if longest <= maxOcrDimension { return source }
+  // ReplayKit delivers 420 biplanar frames; plane 0 is the grayscale luma,
+  // which is all OCR needs. Scaling just that plane keeps the working set to
+  // a couple of MB. Falls back to the raw frame for non-planar formats.
+  private func downscaledLuma(_ source: CVPixelBuffer) -> CVPixelBuffer? {
+    guard CVPixelBufferGetPlaneCount(source) >= 2 else { return source }
+    CVPixelBufferLockBaseAddress(source, .readOnly)
+    defer { CVPixelBufferUnlockBaseAddress(source, .readOnly) }
+    guard let srcBase = CVPixelBufferGetBaseAddressOfPlane(source, 0) else { return nil }
+    let srcW = CVPixelBufferGetWidthOfPlane(source, 0)
+    let srcH = CVPixelBufferGetHeightOfPlane(source, 0)
+    let srcRowBytes = CVPixelBufferGetBytesPerRowOfPlane(source, 0)
 
-    let scale = maxOcrDimension / longest
-    let dstW = Int((CGFloat(srcW) * scale).rounded())
-    let dstH = Int((CGFloat(srcH) * scale).rounded())
+    let longest = max(srcW, srcH)
+    let scale = longest > maxOcrDimension ? Double(maxOcrDimension) / Double(longest) : 1.0
+    let dstW = max(1, Int((Double(srcW) * scale).rounded()))
+    let dstH = max(1, Int((Double(srcH) * scale).rounded()))
 
-    if scaledBuffer == nil || scaledWidth != dstW || scaledHeight != dstH {
+    if lumaBuffer == nil || lumaWidth != dstW || lumaHeight != dstH {
       var created: CVPixelBuffer?
-      let attrs = [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary
-      CVPixelBufferCreate(nil, dstW, dstH, kCVPixelFormatType_32BGRA, attrs, &created)
-      scaledBuffer = created
-      scaledWidth = dstW
-      scaledHeight = dstH
+      CVPixelBufferCreate(nil, dstW, dstH, kCVPixelFormatType_OneComponent8, nil, &created)
+      lumaBuffer = created
+      lumaWidth = dstW
+      lumaHeight = dstH
     }
-    guard let target = scaledBuffer else { return nil }
+    guard let target = lumaBuffer else { return nil }
 
-    let transform = CGAffineTransform(scaleX: scale, y: scale)
-    let image = CIImage(cvPixelBuffer: source).transformed(by: transform)
-    ciContext.render(image, to: target)
-    return target
+    CVPixelBufferLockBaseAddress(target, [])
+    defer { CVPixelBufferUnlockBaseAddress(target, []) }
+    guard let dstBase = CVPixelBufferGetBaseAddress(target) else { return nil }
+
+    var srcVimage = vImage_Buffer(
+      data: srcBase,
+      height: vImagePixelCount(srcH),
+      width: vImagePixelCount(srcW),
+      rowBytes: srcRowBytes)
+    var dstVimage = vImage_Buffer(
+      data: dstBase,
+      height: vImagePixelCount(dstH),
+      width: vImagePixelCount(dstW),
+      rowBytes: CVPixelBufferGetBytesPerRow(target))
+    let err = vImageScale_Planar8(&srcVimage, &dstVimage, nil, vImage_Flags(kvImageNoFlags))
+    return err == kvImageNoError ? target : nil
+  }
+
+  private static func footprintMb() -> Double {
+    var info = task_vm_info_data_t()
+    var count = mach_msg_type_number_t(
+      MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+    let result = withUnsafeMutablePointer(to: &info) { infoPtr in
+      infoPtr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { intPtr in
+        task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), intPtr, &count)
+      }
+    }
+    guard result == KERN_SUCCESS else { return 0 }
+    return Double(info.phys_footprint) / 1_048_576
   }
 
   private func writeSnapshot(lines: [String], timestampMs: Int64) {
