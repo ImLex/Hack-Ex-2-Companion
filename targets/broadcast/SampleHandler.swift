@@ -1,3 +1,4 @@
+import CoreImage
 import ReplayKit
 import Vision
 
@@ -27,6 +28,15 @@ class SampleHandler: RPBroadcastSampleHandler {
   private var lastTextHash: Int = 0
   private var writesSinceTrim = 0
 
+  // The extension is hard-capped at 50 MB; OCR at full screen resolution can
+  // blow past that and iOS kills the whole broadcast. Frames are downscaled
+  // into one reused buffer before Vision sees them.
+  private let maxOcrDimension: CGFloat = 1024
+  private lazy var ciContext = CIContext(options: [.cacheIntermediates: false])
+  private var scaledBuffer: CVPixelBuffer?
+  private var scaledWidth = 0
+  private var scaledHeight = 0
+
   private lazy var appGroupId: String = Self.resolveAppGroupId()
   private lazy var sharedDefaults: UserDefaults? = UserDefaults(suiteName: appGroupId)
   private lazy var queueDir: URL? = {
@@ -50,13 +60,19 @@ class SampleHandler: RPBroadcastSampleHandler {
       sharedDefaults?.set(now, forKey: "hx2.lastFrameTs")
     }
 
+    // Let the session settle before the first OCR pass.
+    if lastProcessed == 0 {
+      lastProcessed = now
+      return
+    }
     guard now - lastProcessed >= frameInterval else { return }
     let companionTs = sharedDefaults?.double(forKey: "hx2.companionForegroundTs") ?? 0
     guard now - companionTs > companionPauseWindow else { return }
-    guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+    guard let fullBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
     lastProcessed = now
 
     autoreleasepool {
+      guard let pixelBuffer = downscaleIfNeeded(fullBuffer) else { return }
       let request = VNRecognizeTextRequest()
       request.recognitionLevel = .accurate
       // IPs, hex wallets and handles like "hx84d9...762d" must come through
@@ -92,6 +108,32 @@ class SampleHandler: RPBroadcastSampleHandler {
 
       writeSnapshot(lines: lines, timestampMs: Int64(now * 1000))
     }
+  }
+
+  private func downscaleIfNeeded(_ source: CVPixelBuffer) -> CVPixelBuffer? {
+    let srcW = CVPixelBufferGetWidth(source)
+    let srcH = CVPixelBufferGetHeight(source)
+    let longest = CGFloat(max(srcW, srcH))
+    if longest <= maxOcrDimension { return source }
+
+    let scale = maxOcrDimension / longest
+    let dstW = Int((CGFloat(srcW) * scale).rounded())
+    let dstH = Int((CGFloat(srcH) * scale).rounded())
+
+    if scaledBuffer == nil || scaledWidth != dstW || scaledHeight != dstH {
+      var created: CVPixelBuffer?
+      let attrs = [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary
+      CVPixelBufferCreate(nil, dstW, dstH, kCVPixelFormatType_32BGRA, attrs, &created)
+      scaledBuffer = created
+      scaledWidth = dstW
+      scaledHeight = dstH
+    }
+    guard let target = scaledBuffer else { return nil }
+
+    let transform = CGAffineTransform(scaleX: scale, y: scale)
+    let image = CIImage(cvPixelBuffer: source).transformed(by: transform)
+    ciContext.render(image, to: target)
+    return target
   }
 
   private func writeSnapshot(lines: [String], timestampMs: Int64) {
