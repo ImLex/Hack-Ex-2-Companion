@@ -33,12 +33,10 @@ class SampleHandler: RPBroadcastSampleHandler {
   // vImage (no CoreImage/Metal — that context's baseline alone is ~15 MB),
   // and recognition degrades to .fast / skips frames as footprint climbs.
   private let maxOcrDimension = 1024
-  private let fastModeFootprintMb = 30.0
   private let skipFrameFootprintMb = 40.0
   private var lumaBuffer: CVPixelBuffer?
   private var lumaWidth = 0
   private var lumaHeight = 0
-  private var useFastRecognition = false
 
   private let ocrQueue = DispatchQueue(label: "hx2.ocr", qos: .utility)
   private var ocrBusy = false
@@ -86,7 +84,6 @@ class SampleHandler: RPBroadcastSampleHandler {
 
     let footprintMb = Self.footprintMb()
     sharedDefaults?.set(footprintMb, forKey: "hx2.memFootprintMb")
-    if footprintMb > fastModeFootprintMb { useFastRecognition = true }
     if footprintMb > skipFrameFootprintMb { return }
 
     guard let luma = downscaledLuma(fullBuffer) else { return }
@@ -101,7 +98,10 @@ class SampleHandler: RPBroadcastSampleHandler {
 
   private func runOcr(luma: CVPixelBuffer, timestampMs: Int64) {
     let request = VNRecognizeTextRequest()
-    request.recognitionLevel = useFastRecognition ? .fast : .accurate
+    // .accurate's ML models alone blow the 50 MB extension cap on A11-era
+    // devices (measured: jetsam at ~52 MB during the first pass). .fast uses
+    // a far smaller pipeline and handles high-contrast UI text well.
+    request.recognitionLevel = .fast
     // IPs, hex wallets and handles like "hx84d9...762d" must come through
     // verbatim; language correction rewrites them into English words.
     request.usesLanguageCorrection = false
