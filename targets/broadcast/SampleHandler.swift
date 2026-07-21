@@ -40,6 +40,9 @@ class SampleHandler: RPBroadcastSampleHandler {
   private var lumaHeight = 0
   private var useFastRecognition = false
 
+  private let ocrQueue = DispatchQueue(label: "hx2.ocr", qos: .utility)
+  private var ocrBusy = false
+
   private lazy var appGroupId: String = Self.resolveAppGroupId()
   private lazy var sharedDefaults: UserDefaults? = UserDefaults(suiteName: appGroupId)
   private lazy var queueDir: URL? = {
@@ -63,6 +66,13 @@ class SampleHandler: RPBroadcastSampleHandler {
       sharedDefaults?.set(now, forKey: "hx2.lastFrameTs")
     }
 
+    // Never block this callback: replayd (the system broadcast daemon) owns
+    // every in-flight frame, and its own Jetsam limit is tiny (~20 MB). If
+    // OCR runs synchronously here, frames back up inside replayd until iOS
+    // kills it and the whole broadcast ends. So: drop frames while OCR is
+    // busy, copy out a small luma buffer, and do the slow work on our queue.
+    guard !ocrBusy else { return }
+
     // Let the session settle before the first OCR pass.
     if lastProcessed == 0 {
       lastProcessed = now
@@ -79,43 +89,51 @@ class SampleHandler: RPBroadcastSampleHandler {
     if footprintMb > fastModeFootprintMb { useFastRecognition = true }
     if footprintMb > skipFrameFootprintMb { return }
 
-    autoreleasepool {
-      guard let pixelBuffer = downscaledLuma(fullBuffer) else { return }
-      let request = VNRecognizeTextRequest()
-      request.recognitionLevel = useFastRecognition ? .fast : .accurate
-      // IPs, hex wallets and handles like "hx84d9...762d" must come through
-      // verbatim; language correction rewrites them into English words.
-      request.usesLanguageCorrection = false
-      request.recognitionLanguages = ["en-US"]
-
-      let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up)
-      try? handler.perform([request])
-      guard let observations = request.results, !observations.isEmpty else { return }
-
-      // Reading order: top-to-bottom in coarse rows, then left-to-right.
-      // Vision's normalized coordinates have their origin at the bottom-left.
-      var items: [OCRLine] = []
-      items.reserveCapacity(observations.count)
-      for obs in observations {
-        guard let text = obs.topCandidates(1).first?.string, !text.isEmpty else { continue }
-        let box = obs.boundingBox
-        let flippedMidY: CGFloat = 1.0 - box.midY
-        let row = Int((flippedMidY * 100.0).rounded())
-        items.append(OCRLine(row: row, x: box.minX, text: text))
-      }
-      guard !items.isEmpty else { return }
-      items.sort { a, b in
-        if a.row != b.row { return a.row < b.row }
-        return a.x < b.x
-      }
-      let lines = items.map { $0.text }
-
-      let joined = lines.joined(separator: "\n")
-      guard joined.hashValue != lastTextHash else { return }
-      lastTextHash = joined.hashValue
-
-      writeSnapshot(lines: lines, timestampMs: Int64(now * 1000))
+    guard let luma = downscaledLuma(fullBuffer) else { return }
+    ocrBusy = true
+    let timestampMs = Int64(now * 1000)
+    ocrQueue.async { [weak self] in
+      guard let self = self else { return }
+      autoreleasepool { self.runOcr(luma: luma, timestampMs: timestampMs) }
+      self.ocrBusy = false
     }
+  }
+
+  private func runOcr(luma: CVPixelBuffer, timestampMs: Int64) {
+    let request = VNRecognizeTextRequest()
+    request.recognitionLevel = useFastRecognition ? .fast : .accurate
+    // IPs, hex wallets and handles like "hx84d9...762d" must come through
+    // verbatim; language correction rewrites them into English words.
+    request.usesLanguageCorrection = false
+    request.recognitionLanguages = ["en-US"]
+
+    let handler = VNImageRequestHandler(cvPixelBuffer: luma, orientation: .up)
+    try? handler.perform([request])
+    guard let observations = request.results, !observations.isEmpty else { return }
+
+    // Reading order: top-to-bottom in coarse rows, then left-to-right.
+    // Vision's normalized coordinates have their origin at the bottom-left.
+    var items: [OCRLine] = []
+    items.reserveCapacity(observations.count)
+    for obs in observations {
+      guard let text = obs.topCandidates(1).first?.string, !text.isEmpty else { continue }
+      let box = obs.boundingBox
+      let flippedMidY: CGFloat = 1.0 - box.midY
+      let row = Int((flippedMidY * 100.0).rounded())
+      items.append(OCRLine(row: row, x: box.minX, text: text))
+    }
+    guard !items.isEmpty else { return }
+    items.sort { a, b in
+      if a.row != b.row { return a.row < b.row }
+      return a.x < b.x
+    }
+    let lines = items.map { $0.text }
+
+    let joined = lines.joined(separator: "\n")
+    guard joined.hashValue != lastTextHash else { return }
+    lastTextHash = joined.hashValue
+
+    writeSnapshot(lines: lines, timestampMs: timestampMs)
   }
 
   // ReplayKit delivers 420 biplanar frames; plane 0 is the grayscale luma,
